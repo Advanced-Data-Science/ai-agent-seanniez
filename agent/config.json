@@ -1,7 +1,15 @@
 {
-  "FRED_API_KEY": "FAKE_KEY",
-  "GDP_SERIES_ID": "GDP",
-  "CPI_SERIES_ID": "CPIAUCSL",
-  "START_DATE": "2015-01-01",
-  "END_DATE": "2025-01-01"
+  "SERIES_API_MAPPING": {
+    "DGS10": "FRED",
+    "CPIAUCSL": "FRED",
+    "IBM": "ALPHA",
+    "MSFT": "ALPHA",
+    "GOOG": "ALPHA"
+  },
+  "FRED_API_KEY": "fred_key",
+  "ALPHA_VANTAGE_API_KEY": "alpha_key",
+  "START_DATE": "2025-08-01",
+  "END_DATE": "2025-09-01",
+  "FRED_FREQUENCY": "d",
+  "base_delay": 1
 }
