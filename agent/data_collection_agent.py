@@ -20,10 +20,8 @@ class DataCollectionAgent:
         if alpha_key:
             self.config["ALPHA_VANTAGE_API_KEY"] = alpha_key
 
-        # information from https://docs.python.org/3/library/logging.html
-        # and https://stackoverflow.com/questions/28330317/print-timestamp-for-logging-in-python
         logging.basicConfig(
-            filename="logs/collection.log",
+            filename="../logs/collection.log",
             level=logging.INFO,
             format='%(asctime)s %(levelname)-8s %(message)s'
         )
@@ -35,12 +33,20 @@ class DataCollectionAgent:
             "successful_requests": 0,
             "failed_requests": 0
         }
+
+        # Initialize stats for each API
+        self.api_stats = {
+            "FRED": {"successes": 0, "failures": 0},
+            "ALPHA": {"successes": 0, "failures": 0}
+        }
+
         self.delay_multiplier = 1.0
 
     # configuration management
     # information for working with json files found here https://www.geeksforgeeks.org/python/read-write-and-parse-json-using-python/
     def load_config(self, config_file):
         if not os.path.exists(config_file): # handle case where config file is not found
+            logging.error("config file not found")
             raise FileNotFoundError(f"Config file {config_file} not found")
         with open(config_file, "r") as f:
             return json.load(f) # convert to a dictionary
@@ -57,7 +63,7 @@ class DataCollectionAgent:
 
         start_date = self.config.get("START_DATE")
         end_date = self.config.get("END_DATE")
-        frequency = self.config.get("FRED_FREQUENCY", "d") # daily frequency
+        frequency = self.config.get("FRED_FREQUENCY", "d") # get daily data
 
         raw_data = {} # empty dictionary to store the raw data
 
@@ -70,6 +76,7 @@ class DataCollectionAgent:
                     "observation_start": start_date,
                     "observation_end": end_date
                 }
+                logging.info("requesting FRED data")
                 raw_data[series] = self.make_fred_request(fred_url, params) # pull data for FRED symbols
 
             elif api_name == "ALPHA":
@@ -79,6 +86,7 @@ class DataCollectionAgent:
                     "apikey": alpha_api_key,
                     "outputsize": "compact"
                 }
+                logging.info("requesting Alpha Vantage data")
                 raw_data[series] = self.make_alpha_request(alpha_url, params) # pull data for Alpha Vantage symbols
 
             self.respectful_delay()  # rate limiting
@@ -134,9 +142,11 @@ class DataCollectionAgent:
         try:
             response = requests.get(url, params=params) # API response in accordance to parameters
             response.raise_for_status() # raise exception for bad status codes
+            self.api_stats["FRED"]["successes"] += 1
             self.collection_stats["successful_requests"] += 1 # increment successful requests
             return response.json() # parse the response as a json.
         except Exception as e:
+            self.api_stats["FRED"]["failures"] += 1
             self.collection_stats["failed_requests"] += 1 # increment failed_requests if exception occurs
             print(f"Request failed for params={params}: {e}")
             return None
@@ -146,37 +156,40 @@ class DataCollectionAgent:
         try:
             response = requests.get(url, params=params) # API response in accordance to parameters
             response.raise_for_status() # raise exception for bad status codes
+            self.api_stats["ALPHA"]["successes"] += 1
             self.collection_stats["successful_requests"] += 1 # increment successful requests
             return response.json() # parse the response as a json.
         except Exception as e:
+            self.api_stats["ALPHA"]["failures"] += 1
             self.collection_stats["failed_requests"] += 1 # increment failed_requests if exception occurs
             print(f"Request failed for params={params}: {e}")
             return None
 
     # standardize numbers and missing entries and store as a dictionary
     def process_data(self, raw_data):
-        processed = {} # empty dictionary
+        logging.info("processing data...")
+        processed = {} # empty dictionary to store processed data
         last_month = datetime.today() - timedelta(days=30) # get previous 30 days for alpha vantage
 
         for series, data in raw_data.items():
             processed[series] = [] # list to hold the data for each series
-
+            logging.info(f"processing series: {series}")
             # FRED
             if "observations" in data:
                 for observation in data["observations"]:
                     try:
-                        value = float(observation["value"])
+                        value = float(observation["value"]) # standardize numeric values to be floats
                     except:
-                        value = None
-                    processed[series].append({"date": observation["date"], "value": value})
+                        value = None # unless empty
+                    processed[series].append({"date": observation["date"], "value": value}) # append to the dictionary
 
             # Alpha Vantage
             elif "Time Series (Daily)" in data:
                 for date_str, values in data["Time Series (Daily)"].items():
-                    date = datetime.strptime(date_str, "%Y-%m-%d")
+                    date = datetime.strptime(date_str, "%Y-%m-%d") # standardize date format into datetime object
                     if date >= last_month: # most recent data
                         try:
-                            close_price = float(values["4. close"])
+                            close_price = float(values["4. close"]) # standardize numeric values to be floats
                         except:
                             close_price = None
                         processed[series].append({"date": date_str, "value": close_price})
@@ -187,17 +200,21 @@ class DataCollectionAgent:
         # store raw data
 
         for series, data in raw_data.items():
+            logging.info(f"storing raw data: {series}...")
             path = f"../data/raw/{series}_raw.json" # store raw data
             with open(path, "w") as f:
                 json.dump(data, f, indent=2)
+            logging.info(f"raw data stored: {series}")
 
         # store processed data
         for series, observations in processed.items():
+            logging.info(f"storing processed data: {series}...")
             path = f"../data/processed/{series}_processed.json" # store in the processed data folder
             with open(path, "w") as f:
                 json.dump(observations, f, indent=2)
+            logging.info(f"processed data stored: {series}")
 
-        # store processed data in memory for further processing
+        # store processed data in memory for further use
         for series, observations in processed.items():
             if series not in self.data_store:
                 self.data_store[series] = [] # store in the original data structure declared at the top of the class
@@ -217,7 +234,7 @@ class DataCollectionAgent:
                 continue
 
             total = len(observations) # total requests
-            non_missing = sum(1 for obs in observations if obs["value"] is not None) # actual observations
+            non_missing = sum(observation["value"] is not None for observation in observations) # actual observations
             completeness_scores[series] = non_missing / total # ratio of observations to total
 
         # average across series to give us a single score
@@ -228,23 +245,43 @@ class DataCollectionAgent:
 
         return avg_completeness
 
+    def get_success_fail_by_api(self):
+        rates = {} # empty dictionary to hold rates
+        for api, stats in self.api_stats.items():
+            total = stats["successes"] + stats["failures"] # total of successes and failures to compute average
+            if total > 0: # if number of successes or failures is greater than 0
+                rates[api] = {
+                    "success rate": stats["successes"] / total, # success rate
+                    "failure rate": stats["failures"] / total # failure rate
+                }
+            else: # otherwise, return none for the rates
+                rates[api] = {
+                    "success rate": None,
+                    "failure rate": None
+                }
+        return rates
 
     # reports and metadata
     def generate_metadata(self):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        logging.info("generating metadata file...")
         metadata = {
+            "timestamp": timestamp,
             "collection_date": datetime.now().isoformat(), # get the date of collection
             "total_records": sum(len(v) for v in self.data_store.values()), # count the total number of records
             "success_rate": self.get_success_rate(), # call the success_rate method
             "series_collected": list(self.data_store.keys()) # get a list of the series' that were queried for
         }
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"../reports/metadata_{timestamp}.json"
+        filename = f"../reports/metadata.json"
         with open(filename, "w") as f:
             json.dump(metadata, f, indent=2)
 
     def generate_quality_report(self):
+        logging.info("generating quality report...")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") # attach the time the report was generated
         report_data = {
+            "timestamp" : timestamp,
             "total_records": sum(len(v) for v in self.data_store.values()),
             "collection_success_rate": self.get_success_rate(),
             "quality_score": self.assess_data_quality(),
@@ -253,23 +290,25 @@ class DataCollectionAgent:
             }
         }
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") # attach the time the report was generated
-        filename = f"../reports/quality_assessment_{timestamp}.json"
-        with open("../reports/quality_assessment.json", "w") as f:
-            json.dump(filename, f, indent=2)
+        filename = "../reports/quality_assessment.json"
+        with open(filename, "w") as f:
+            json.dump(report_data, f, indent=2)
 
     def generate_collection_summary(self):
+        logging.info("generating collection summary...")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         summary_data = {
+            "timestamp" : timestamp,
             "total_data_points": sum(len(v) for v in self.data_store.values()), # sum of the collected data points
             "successes": self.collection_stats["successful_requests"], # return accumulated number of successful requests
             "failures": self.collection_stats["failed_requests"], # return accumulated number of failed requests
-            "success rate": self.get_success_rate()
+            "overall success rate": self.get_success_rate(),
+            "success and failure by api" : self.get_success_fail_by_api()
         }
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"../reports/collection_summary_{timestamp}.json"
-        with open("../reports/collection_summary.json", "w") as f:
-            json.dump(filename, f, indent=2)
+        filename = "../reports/collection_summary.json"
+        with open(filename, "w") as f:
+            json.dump(summary_data, f, indent=2)
 
 
 if __name__ == "__main__":
